@@ -1,36 +1,42 @@
 # pi-command-queue
 
-pi 0.87.1 の対話型 TUI 用コマンドキュー拡張。入力を FIFO で送り、各処理が終わってから次の入力に進みます。
+Queue prompts and commands in Pi's interactive terminal UI. Items run in order: the next item is sent only after the previous one finishes. Built and tested against Pi 0.87.1.
 
-## 起動
+## Install
 
 ```sh
+pi install npm:pi-command-queue
+```
+
+To try it for one run without installing it, use `pi -e npm:pi-command-queue`. To install for one project instead of your user account, use `pi install -l npm:pi-command-queue` (Pi requires project trust before loading project packages).
+
+## Use
+
+1. Start Pi in interactive terminal mode and enter `/command-queue` to turn queue mode on.
+2. Submit each item with Enter or Alt+Enter. Items wait in a FIFO queue; Pi sends the first one when idle, then sends the rest one at a time.
+3. Enter `/command-queue` again to turn queue mode off and discard unsent items. This does not stop the item already running.
+
+The widget above the editor shows the current item, up to five unsent items, and the number of additional items. `/command-queue-edit` lets you select and remove an unsent item; it cannot remove the running item. After the last submitted item finishes, queue mode turns off automatically. Removing the last unsent item before it is submitted leaves queue mode on.
+
+You can queue normal prompts, built-in Pi commands (such as `/new`), skill and prompt-template invocations, and `!` / `!!` shell commands. A queued `/new` carries remaining items into the new session. Slash commands registered by other extensions cannot be queued: the command stays in the editor, so turn queue mode off before running it.
+
+If an agent fails or is aborted, a shell command exits nonzero, or a selector is cancelled while more items remain, the queue pauses. Choose **Continue** to skip the failed item and process the rest, or **Discard** to drop the remaining items and turn queue mode off.
+
+## Limitations
+
+- Queue mode is available only in Pi's interactive terminal UI. RPC, print, and JSON mode inputs are not queued.
+- Pi does not expose every built-in command error or a submission failure before an agent starts. The queue may advance despite such a failure. **Be careful when queueing irreversible actions, including session changes.** If an agent has not started within 60 seconds, the queue pauses.
+- Queuing `/reload` or `/quit` discards all later items. Unsent items are not restored after Pi restarts; changing sessions outside the queue also discards them.
+- Pasting an image into Pi's terminal UI inserts a temporary file path. The queue stores that path as text; it does not save or attach the image separately.
+- Queue mode replaces the main editor, so it may conflict with other editor-replacement extensions. Built-in commands that open a selector wait for it to close, but selector cancellation and built-in command failures can only be detected on a best-effort basis.
+
+## Develop locally
+
+```sh
+npm ci
+npm test
+npm run typecheck
 pi -e .
 ```
 
-このリポジトリのディレクトリから起動します。継続利用するなら `pi install .` でローカルパッケージとして登録できます。
-
-pi 内で `/command-queue` を実行すると ON/OFF が切り替わります。ON 中は Enter と Alt+Enter の入力がキューに入り、pi がアイドルなら先頭の項目から自動で処理します。未送信の先頭5件と残り件数を入力欄の上に表示します。
-
-- `/command-queue-edit`: 未送信の項目を1件選んで削除する。実行中項目は削除できません。
-- `/command-queue`: OFF にすると未送信項目をすべて破棄する。実行中の処理は止めません。
-- すべて処理すると自動で OFF に戻ります。送信前に最後の未送信項目を削除しただけなら ON のままです。
-- エージェントの失敗・中断、または `!` / `!!` の終了コードが0以外で後続があるときは「続行」か「破棄」を選びます。続行すると失敗項目を飛ばします。
-
-通常の入力、pi 組み込みコマンド（`/new` など）、スキル、プロンプトテンプレート、`!` / `!!` を扱います。キュー内の `/new` でセッションが変わっても後続項目を引き継ぎます。ほかの拡張が登録したスラッシュコマンドは対象外です。ON 中に入力すると送信せず入力欄に残すので、OFF にしてから実行してください。
-
-## 制約
-
-- pi 本体は変更しません。組み込みコマンドの内部エラーや、エージェントが始まる前の送信エラーは拡張から確実には検知できません。失敗に気づかず次の項目へ進む可能性があるため、**セッション切替など取り消せない操作を自動化する場合は注意してください**。エージェント開始が60秒間確認できない場合は一時停止します。
-- `/reload` と `/quit` をキューから実行すると後続は破棄されます。pi の再起動でも未送信キューは復元されません。キュー外のセッション切替でも未送信項目を破棄します。
-- pi TUI の画像貼り付けは、画像を一時ファイルに保存してそのパスを入力欄に入れます。この拡張もそのパス文字列を保持します。画像バイナリを別途保存したり添付したりはしません。
-- キューモード中はメイン入力欄を置き換えるため、別のエディタ置換拡張とは競合します。選択画面を開く組み込みコマンドは画面を閉じるまで待ちますが、選択画面のキャンセルや組み込みコマンドの失敗検知は pi が公開する範囲でのベストエフォートです。
-- TUI 専用です。RPC・print・JSON モードの入力はキューに入りません。
-
-## 開発時の確認
-
-```sh
-npm install
-npm test
-npm run typecheck
-```
+`pi -e .` loads this checkout without installing it. Licensed under [MIT](LICENSE).
