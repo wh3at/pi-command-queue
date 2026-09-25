@@ -173,6 +173,44 @@ test("/command-queue-edit deletes an unsent item, not the running item", async (
   assert.deepEqual(app.sent, ["running@1"]);
 });
 
+test("edit selection does not remove the next item when its target starts running", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.submit("running"); app.submit("selected"); app.submit("following");
+  await tick(); await tick();
+  let choose!: () => void;
+  app.ui.select = (_title, options) => new Promise<string>((resolve) => {
+    choose = () => resolve(options[0]);
+  });
+  const editing = app.commands.get("command-queue-edit")!("", app.ctx);
+  await app.settle(); // selected becomes running while the selector is open
+  choose();
+  await editing;
+  const notice = app.notices.at(-1);
+  await app.settle();
+  await app.settle();
+  assert.match(notice!, /already running/);
+  assert.deepEqual(app.sent, ["running@1", "selected@1", "following@1"]);
+});
+
+test("edit selection removes the captured item after pending shifts", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.submit("running"); app.submit("next"); app.submit("selected"); app.submit("following");
+  await tick(); await tick();
+  let choose!: () => void;
+  app.ui.select = (_title, options) => new Promise<string>((resolve) => {
+    choose = () => resolve(options[1]);
+  });
+  const editing = app.commands.get("command-queue-edit")!("", app.ctx);
+  await app.settle(); // next becomes running, shifting selected from index 1 to 0
+  choose();
+  await editing;
+  await app.settle();
+  await app.settle();
+  assert.deepEqual(app.sent, ["running@1", "next@1", "following@1"]);
+});
+
 test("turning OFF before dispatch does not send the shifted item", async () => {
   const app = environment();
   await app.start(); await app.turnOn();

@@ -279,12 +279,15 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         commandCtx.ui.notify("No pending items.", "info");
         return;
       }
-      const options = queue.pending.map((item) => `${item.id}. ${preview(item.text)}`);
+      const items = [...queue.pending];
+      const options = items.map((item) => `${item.id}. ${preview(item.text)}`);
       const selected = await commandCtx.ui.select("Select a pending item to remove", options);
-      if (selected) {
-        const item = queue.pending[options.indexOf(selected)];
-        if (item && queue.remove(item.id)) commandCtx.ui.notify(`Removed item ${item.id}.`, "info");
-      }
+      if (!selected) return;
+      const item = items[options.indexOf(selected)];
+      if (!item) return;
+      if (queue.remove(item.id)) commandCtx.ui.notify(`Removed item ${item.id}.`, "info");
+      else if (queue.current?.id === item.id) commandCtx.ui.notify(`Item ${item.id} is already running; cannot remove it.`, "warning");
+      else commandCtx.ui.notify(`Item ${item.id} is no longer pending.`, "info");
     },
   });
 
