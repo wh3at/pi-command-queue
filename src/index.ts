@@ -69,9 +69,11 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     if (queue.mode === "off") {
       current.ui.setWidget(WIDGET, undefined);
       if (hasInstalledEditor) {
+        const draft = editor?.getExpandedText();
         hasInstalledEditor = false;
         current.ui.setEditorComponent(previousEditor);
         editor = undefined;
+        if (draft) current.ui.setEditorText(draft);
       }
       return;
     }

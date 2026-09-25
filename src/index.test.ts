@@ -16,6 +16,7 @@ function environment() {
   const entries: SessionEntry[] = [];
   let pausedDone: ((choice: string) => void) | undefined;
   let editor: any;
+  let nativeDraft = "";
   let busy = false;
   let currentSession = 1;
 
@@ -54,6 +55,7 @@ function environment() {
         editor.focused = true;
       }
     },
+    setEditorText: (text: string) => { if (editor) editor.setText(text); else nativeDraft = text; },
     setWidget: (_key: string, lines?: string[]) => { if (lines) widgets.push(lines); },
     notify: (text: string) => { notices.push(text); },
     select: async (_title: string, options: string[]) => options[0],
@@ -88,6 +90,7 @@ function environment() {
   return {
     sent, notices, widgets, commands, ctx, ui,
     get editor() { return editor; },
+    get nativeDraft() { return nativeDraft; },
     emit,
     async start() { await emit("session_start", { type: "session_start", reason: "startup" }); },
     async turnOn() { await commands.get("command-queue")!("", ctx); },
@@ -113,6 +116,27 @@ test("Enter queues text; next item waits for settled, /new changes the destinati
   assert.deepEqual(app.sent, ["first@1", "/new@1", "second@2"]);
   await app.settle();
   assert.equal(app.editor, undefined); // automatic OFF restores the native editor
+});
+
+test("the unsent draft survives automatic OFF after the last queued message", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.submit("running");
+  await tick(); await tick();
+  app.editor.setText("next input\nsecond line");
+  await app.settle();
+  assert.deepEqual(app.sent, ["running@1"]);
+  assert.equal(app.editor, undefined);
+  assert.equal(app.nativeDraft, "next input\nsecond line");
+});
+
+test("the unsent draft survives turning the queue off manually", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.editor.setText("unfinished input");
+  await app.commands.get("command-queue")!("", app.ctx);
+  assert.equal(app.editor, undefined);
+  assert.equal(app.nativeDraft, "unfinished input");
 });
 
 test("unsupported extension command stays in the editor and is not sent", async () => {
