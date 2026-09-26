@@ -123,6 +123,7 @@ test("widget shows queue status, bulleted items and only the overflow count", as
   await app.start(); await app.turnOn();
   assert.deepEqual(app.widgets.at(-1), ["Command queue ON"]);
   for (const text of ["running", "one", "two", "three", "four", "five", "six"]) app.submit(text);
+  await tick(); await tick();
   assert.deepEqual(app.widgets.at(-1), [
     "Command queue ON",
     "Running: running",
@@ -137,6 +138,9 @@ test("widget shows queue status, bulleted items and only the overflow count", as
   app.ui.select = async (_title, choices) => { options = choices; return choices[0]; };
   await app.commands.get("command-queue-edit")!("", app.ctx);
   assert.deepEqual(options, ["2. one", "3. two", "4. three", "5. four", "6. five", "7. six"]);
+  assert.deepEqual(app.sent, ["running@1"]);
+  await app.commands.get("command-queue")!("", app.ctx); // discard unsent items
+  await app.settle(); // resolve the running item's dispatch timeout
 });
 
 test("the unsent draft survives automatic OFF after the last queued message", async () => {
