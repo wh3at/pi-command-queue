@@ -86,9 +86,9 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       });
     }
     const label = queue.mode === "paused" ? "PAUSED" : "ON";
-    const lines = [`Command queue ${label} · ${queue.pending.length} pending`];
+    const lines = [`Command queue ${label}`];
     if (queue.current) lines.push(`Running: ${preview(queue.current.text)}`);
-    for (const item of queue.pending.slice(0, 5)) lines.push(`${item.id}. ${preview(item.text)}`);
+    for (const item of queue.pending.slice(0, 5)) lines.push(`• ${preview(item.text)}`);
     if (queue.pending.length > 5) lines.push(`${queue.pending.length - 5} more · /command-queue-edit`);
     current.ui.setWidget(WIDGET, lines, { placement: "aboveEditor" });
   }

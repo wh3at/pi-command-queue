@@ -118,6 +118,27 @@ test("Enter queues text; next item waits for settled, /new changes the destinati
   assert.equal(app.editor, undefined); // automatic OFF restores the native editor
 });
 
+test("widget shows queue status, bulleted items and only the overflow count", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  assert.deepEqual(app.widgets.at(-1), ["Command queue ON"]);
+  for (const text of ["running", "one", "two", "three", "four", "five", "six"]) app.submit(text);
+  assert.deepEqual(app.widgets.at(-1), [
+    "Command queue ON",
+    "Running: running",
+    "• one",
+    "• two",
+    "• three",
+    "• four",
+    "• five",
+    "1 more · /command-queue-edit",
+  ]);
+  let options: string[] = [];
+  app.ui.select = async (_title, choices) => { options = choices; return choices[0]; };
+  await app.commands.get("command-queue-edit")!("", app.ctx);
+  assert.deepEqual(options, ["2. one", "3. two", "4. three", "5. four", "6. five", "7. six"]);
+});
+
 test("the unsent draft survives automatic OFF after the last queued message", async () => {
   const app = environment();
   await app.start(); await app.turnOn();
@@ -155,6 +176,7 @@ test("failure with a pending item pauses until the user chooses continue", async
   app.submit("bad"); app.submit("good");
   await tick(); await tick();
   await app.settle("error");
+  assert.deepEqual(app.widgets.at(-1), ["Command queue PAUSED", "• good"]);
   assert.deepEqual(app.sent, ["bad@1"]);
   app.choose("continue");
   await tick(); await tick();
