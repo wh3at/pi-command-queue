@@ -12,13 +12,13 @@ To try it for one run without installing it, use `pi -e npm:pi-command-queue`. T
 
 ## Use
 
-1. Start Pi in interactive terminal mode and enter `/command-queue` to turn queue mode on.
-2. Submit each item with Enter or Alt+Enter. Items wait in a FIFO queue; Pi sends the first one when idle, then sends the rest one at a time.
-3. Enter `/command-queue` again to turn queue mode off and discard unsent items. This does not stop the item already running.
+1. Start Pi in interactive terminal mode. Enter `/command-queue` to turn queue mode on, or `/command-queue <input>` to turn it on and queue one item immediately.
+2. Submit more items with Enter or Alt+Enter, or enter `/command-queue <input>` while queue mode is on to append one item. The entire input after the command is one item. Items wait in a FIFO queue; Pi sends the first one when idle, then sends the rest one at a time.
+3. Enter `/command-queue` without input to turn queue mode off and discard unsent items. This does not stop the item already running.
 
 The widget above the editor shows the current item, up to five unsent items, and the number of additional items. `/command-queue-edit` lets you select and remove an unsent item; it cannot remove the running item. After the last submitted item finishes, queue mode turns off automatically. Removing the last unsent item before it is submitted leaves queue mode on.
 
-You can queue normal prompts, built-in Pi commands (such as `/new`), skill and prompt-template invocations, and `!` / `!!` shell commands. A queued `/new` carries remaining items into the new session. Slash commands registered by other extensions cannot be queued: the command stays in the editor, so turn queue mode off before running it.
+You can queue normal prompts, built-in Pi commands (such as `/new`), skill and prompt-template invocations, and `!` / `!!` shell commands, including through `/command-queue <input>`. A queued `/new` carries remaining items into the new session. Slash commands registered by other extensions cannot be queued: the command stays in the editor, so turn queue mode off before running it. If the queue is paused, inline input is not added until you choose Continue or Discard.
 
 If an agent fails or is aborted, a shell command exits nonzero, or a selector is cancelled while more items remain, the queue pauses. Choose **Continue** to skip the failed item and process the rest, or **Discard** to drop the remaining items and turn queue mode off.
 

@@ -97,7 +97,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     if (!text.trim()) return;
     const current = usableContext();
     if (!current) return;
-    if (text === "/command-queue" || text === "/command-queue-edit") {
+    if (text === "/command-queue" || text.startsWith("/command-queue ") || text === "/command-queue-edit") {
       void source.submitNative(text);
       return;
     }
@@ -258,15 +258,32 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     if (pi === nextPi) return;
     pi = nextPi;
   pi.registerCommand("command-queue", {
-    description: "Toggle command queue mode on or off",
-    handler: async (_args, commandCtx) => {
+    description: "Toggle queue mode, or queue the supplied input",
+    handler: async (args, commandCtx) => {
       if (commandCtx.mode !== "tui") {
         commandCtx.ui.notify("Command queue is available only in interactive TUI mode.", "warning");
         return;
       }
       ctx = commandCtx;
-      queue.toggle();
-      commandCtx.ui.notify(queue.mode === "off" ? "Queue discarded; mode OFF." : "Command queue ON.", "info");
+      const text = args.trim();
+      if (!text) {
+        queue.toggle();
+        commandCtx.ui.notify(queue.mode === "off" ? "Queue discarded; mode OFF." : "Command queue ON.", "info");
+        return;
+      }
+      if (queue.mode === "paused") {
+        commandCtx.ui.setEditorText(`/command-queue ${args}`);
+        commandCtx.ui.notify("Queue paused. Choose Continue or Discard.", "warning");
+        return;
+      }
+      if (inputKind(text, pi.getCommands()) === "unsupported") {
+        commandCtx.ui.setEditorText(`/command-queue ${args}`);
+        commandCtx.ui.notify("Commands from other extensions cannot be queued. Turn the queue off to run this command.", "warning");
+        return;
+      }
+      if (queue.mode === "off") queue.toggle();
+      queue.enqueue(text);
+      commandCtx.ui.notify("Item queued.", "info");
     },
   });
 
