@@ -182,7 +182,7 @@ test("an inline prompt turns queue mode on and off after completion", async () =
   await app.commands.get("command-queue")!("  first prompt  ", app.ctx);
   await tick(); await tick();
   assert.deepEqual(app.sent, ["first prompt@1"]);
-  assert.deepEqual(app.widgets.at(-1), ["Command queue ON", "Running: first prompt"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m", "\x1b[38;5;208mRunning: first prompt\x1b[39m"]);
   await app.settle();
   assert.equal(app.editor, undefined);
 });
@@ -196,7 +196,7 @@ test("inline input appends one item without toggling an active queue", async () 
   app.submit("/command-queue /skill:review details");
   await tick();
   assert.deepEqual(app.sent, ["running@1"]);
-  assert.deepEqual(app.widgets.at(-1), ["Command queue ON", "Running: running", "• /new", "• /skill:review details"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m", "\x1b[38;5;208mRunning: running\x1b[39m", "• /new", "• /skill:review details"]);
   await app.settle();
   assert.deepEqual(app.sent, ["running@1", "/new@1", "/skill:review details@2"]);
   await app.settle();
@@ -220,7 +220,7 @@ test("an inline input cannot bypass a paused queue", async () => {
   await app.settle("error");
   app.submit("/command-queue another");
   await tick();
-  assert.deepEqual(app.widgets.at(-1), ["Command queue PAUSED", "• pending"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue PAUSED\x1b[39m", "• pending"]);
   assert.equal(app.editor.getText(), "/command-queue another");
   assert.match(app.notices.at(-1)!, /Queue paused/);
   app.choose("discard");
@@ -237,7 +237,7 @@ test("an unsupported inline command neither activates nor joins the queue", asyn
   await app.turnOn();
   app.submit("/command-queue /other-command arg");
   await tick();
-  assert.deepEqual(app.widgets.at(-1), ["Command queue ON"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m"]);
   assert.equal(app.editor.getText(), "/command-queue /other-command arg");
 });
 
