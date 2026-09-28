@@ -7,6 +7,12 @@ const WIDGET = "command-queue";
 const START_TIMEOUT_MS = 60_000;
 const afterTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 const preview = (text: string, width = 72) => truncateToWidth(text.replace(/\s+/g, " "), width, "…");
+const ORANGE = { truecolor: "\x1b[38;2;255;135;0m", ansi256: "\x1b[38;5;208m" };
+
+function orange(theme: ExtensionContext["ui"]["theme"]): (text: string) => string {
+  const ansi = theme.getColorMode() === "truecolor" ? ORANGE.truecolor : ORANGE.ansi256;
+  return (text) => `${ansi}${text}\x1b[39m`;
+}
 
 type Submit = (text: string) => void | Promise<void>;
 const RUNTIME_KEY = "__pi_command_queue_runtime_v1__";
@@ -86,8 +92,9 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       });
     }
     const label = queue.mode === "paused" ? "PAUSED" : "ON";
-    const lines = [`Command queue ${label}`];
-    if (queue.current) lines.push(`Running: ${preview(queue.current.text)}`);
+    const paint = orange(current.ui.theme);
+    const lines = [paint(`Command queue ${label}`)];
+    if (queue.current) lines.push(paint(`Running: ${preview(queue.current.text)}`));
     for (const item of queue.pending.slice(0, 5)) lines.push(`• ${preview(item.text)}`);
     if (queue.pending.length > 5) lines.push(`${queue.pending.length - 5} more · /command-queue-edit`);
     current.ui.setWidget(WIDGET, lines, { placement: "aboveEditor" });

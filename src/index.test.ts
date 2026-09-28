@@ -6,7 +6,7 @@ import commandQueueExtension from "./index.ts";
 type Listener = (event: any, ctx: ExtensionContext) => void | Promise<void>;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function environment() {
+function environment(colorMode: "truecolor" | "256color" = "256color") {
   delete (globalThis as unknown as Record<string, unknown>).__pi_command_queue_runtime_v1__;
   const events = new Map<string, Listener[]>();
   const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
@@ -26,7 +26,7 @@ function environment() {
     return false;
   } };
   const tui = { requestRender() {}, getFocusedComponent: () => editor };
-  const theme = { borderColor: (s: string) => s, fg: (_kind: string, s: string) => s };
+  const theme = { borderColor: (s: string) => s, fg: (_kind: string, s: string) => s, getColorMode: () => colorMode };
   const native = async (text: string) => {
     if (text === "/new") {
       sent.push(`/new@${currentSession}`);
@@ -58,6 +58,7 @@ function environment() {
     }
   };
   const ui = {
+    theme,
     getEditorComponent: () => undefined,
     setEditorComponent: (factory: any) => {
       editor = factory ? factory(tui, theme, kb) : undefined;
@@ -132,12 +133,12 @@ test("Enter queues text; next item waits for settled, /new changes the destinati
 test("widget shows queue status, bulleted items and only the overflow count", async () => {
   const app = environment();
   await app.start(); await app.turnOn();
-  assert.deepEqual(app.widgets.at(-1), ["Command queue ON"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m"]);
   for (const text of ["running", "one", "two", "three", "four", "five", "six"]) app.submit(text);
   await tick(); await tick();
   assert.deepEqual(app.widgets.at(-1), [
-    "Command queue ON",
-    "Running: running",
+    "\x1b[38;5;208mCommand queue ON\x1b[39m",
+    "\x1b[38;5;208mRunning: running\x1b[39m",
     "• one",
     "• two",
     "• three",
@@ -256,7 +257,7 @@ test("failure with a pending item pauses until the user chooses continue", async
   app.submit("bad"); app.submit("good");
   await tick(); await tick();
   await app.settle("error");
-  assert.deepEqual(app.widgets.at(-1), ["Command queue PAUSED", "• good"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue PAUSED\x1b[39m", "• good"]);
   assert.deepEqual(app.sent, ["bad@1"]);
   app.choose("continue");
   await tick(); await tick();
@@ -329,4 +330,16 @@ test("an external session switch drops an item before dispatch starts", async ()
   await app.emit("session_shutdown", { type: "session_shutdown", reason: "new" });
   await tick(); await tick();
   assert.deepEqual(app.sent, []);
+});
+
+test("the widget uses a truecolor orange when the theme reports truecolor", async () => {
+  const app = environment("truecolor");
+  await app.start(); await app.turnOn();
+  app.submit("running");
+  await tick(); await tick();
+  assert.deepEqual(app.widgets.at(-1), [
+    "\x1b[38;2;255;135;0mCommand queue ON\x1b[39m",
+    "\x1b[38;2;255;135;0mRunning: running\x1b[39m",
+  ]);
+  await app.settle();
 });
