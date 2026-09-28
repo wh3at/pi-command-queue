@@ -100,6 +100,11 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     current.ui.setWidget(WIDGET, lines, { placement: "aboveEditor" });
   }
 
+  function queueRejection(text: string): string | undefined {
+    if (queue.mode === "paused") return "Queue paused. Choose Continue or Discard.";
+    if (inputKind(text, pi.getCommands()) === "unsupported") return "Commands from other extensions cannot be queued. Turn the queue off to run this command.";
+  }
+
   function onSubmit(text: string, source: QueueEditor): void {
     if (!text.trim()) return;
     const current = usableContext();
@@ -108,14 +113,10 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       void source.submitNative(text);
       return;
     }
-    if (queue.mode !== "on") {
+    const rejection = queueRejection(text);
+    if (rejection) {
       source.setText(text);
-      current.ui.notify("Queue paused. Choose Continue or Discard.", "warning");
-      return;
-    }
-    if (inputKind(text, pi.getCommands()) === "unsupported") {
-      source.setText(text);
-      current.ui.notify("Commands from other extensions cannot be queued. Turn the queue off to run this command.", "warning");
+      current.ui.notify(rejection, "warning");
       return;
     }
     queue.enqueue(text);
@@ -278,14 +279,10 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         commandCtx.ui.notify(queue.mode === "off" ? "Queue discarded; mode OFF." : "Command queue ON.", "info");
         return;
       }
-      if (queue.mode === "paused") {
+      const rejection = queueRejection(text);
+      if (rejection) {
         commandCtx.ui.setEditorText(`/command-queue ${args}`);
-        commandCtx.ui.notify("Queue paused. Choose Continue or Discard.", "warning");
-        return;
-      }
-      if (inputKind(text, pi.getCommands()) === "unsupported") {
-        commandCtx.ui.setEditorText(`/command-queue ${args}`);
-        commandCtx.ui.notify("Commands from other extensions cannot be queued. Turn the queue off to run this command.", "warning");
+        commandCtx.ui.notify(rejection, "warning");
         return;
       }
       if (queue.mode === "off") queue.toggle();
