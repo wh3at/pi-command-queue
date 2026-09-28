@@ -37,14 +37,25 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
       commandQueueExtension(pi);
       currentSession++;
       await emit("session_start", { type: "session_start", reason: "new" });
-    } else if (text.startsWith("/command-queue")) {
-      const command = commands.get(text.slice(1));
-      if (command) await command("", ctx);
-    } else {
-      sent.push(`${text}@${currentSession}`);
-      busy = true;
-      await emit("agent_start", { type: "agent_start" });
+      return;
     }
+    if (text.startsWith("/")) {
+      const separator = text.indexOf(" ");
+      const name = text.slice(1, separator === -1 ? undefined : separator);
+      const command = commands.get(name);
+      if (command) {
+        await command(separator === -1 ? "" : text.slice(separator + 1), ctx);
+        return;
+      }
+    }
+    if (text.startsWith("!")) {
+      sent.push(`${text}@${currentSession}`);
+      entries.push({ type: "message", message: { role: "bashExecution", command: text.slice(text.startsWith("!!") ? 2 : 1).trim(), exitCode: 0, cancelled: false } } as SessionEntry);
+      return;
+    }
+    sent.push(`${text}@${currentSession}`);
+    busy = true;
+    await emit("agent_start", { type: "agent_start" });
   };
   const ui = {
     theme,
@@ -163,6 +174,71 @@ test("the unsent draft survives turning the queue off manually", async () => {
   await app.commands.get("command-queue")!("", app.ctx);
   assert.equal(app.editor, undefined);
   assert.equal(app.nativeDraft, "unfinished input");
+});
+
+test("an inline prompt turns queue mode on and off after completion", async () => {
+  const app = environment();
+  await app.start();
+  await app.commands.get("command-queue")!("  first prompt  ", app.ctx);
+  await tick(); await tick();
+  assert.deepEqual(app.sent, ["first prompt@1"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m", "\x1b[38;5;208mRunning: first prompt\x1b[39m"]);
+  await app.settle();
+  assert.equal(app.editor, undefined);
+});
+
+test("inline input appends one item without toggling an active queue", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.submit("running");
+  await tick(); await tick();
+  app.submit("/command-queue /new");
+  app.submit("/command-queue /skill:review details");
+  await tick();
+  assert.deepEqual(app.sent, ["running@1"]);
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m", "\x1b[38;5;208mRunning: running\x1b[39m", "• /new", "• /skill:review details"]);
+  await app.settle();
+  assert.deepEqual(app.sent, ["running@1", "/new@1", "/skill:review details@2"]);
+  await app.settle();
+  assert.equal(app.editor, undefined);
+});
+
+test("an inline shell command runs through the existing queue dispatch", async () => {
+  const app = environment();
+  await app.start();
+  await app.commands.get("command-queue")!("! echo hello", app.ctx);
+  await tick(); await tick();
+  assert.deepEqual(app.sent, ["! echo hello@1"]);
+  assert.equal(app.editor, undefined);
+});
+
+test("an inline input cannot bypass a paused queue", async () => {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.submit("bad"); app.submit("pending");
+  await tick(); await tick();
+  await app.settle("error");
+  app.submit("/command-queue another");
+  await tick();
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue PAUSED\x1b[39m", "• pending"]);
+  assert.equal(app.editor.getText(), "/command-queue another");
+  assert.match(app.notices.at(-1)!, /Queue paused/);
+  app.choose("discard");
+  await tick();
+});
+
+test("an unsupported inline command neither activates nor joins the queue", async () => {
+  const app = environment();
+  await app.start();
+  await app.commands.get("command-queue")!("/other-command arg", app.ctx);
+  assert.deepEqual(app.widgets, []);
+  assert.equal(app.nativeDraft, "/command-queue /other-command arg");
+  assert.match(app.notices.at(-1)!, /cannot be queued/);
+  await app.turnOn();
+  app.submit("/command-queue /other-command arg");
+  await tick();
+  assert.deepEqual(app.widgets.at(-1), ["\x1b[38;5;208mCommand queue ON\x1b[39m"]);
+  assert.equal(app.editor.getText(), "/command-queue /other-command arg");
 });
 
 test("unsupported extension command stays in the editor and is not sent", async () => {
