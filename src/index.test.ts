@@ -37,7 +37,9 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
       commandQueueExtension(pi);
       currentSession++;
       await emit("session_start", { type: "session_start", reason: "new" });
-    } else if (text.startsWith("/")) {
+      return;
+    }
+    if (text.startsWith("/")) {
       const separator = text.indexOf(" ");
       const name = text.slice(1, separator === -1 ? undefined : separator);
       const command = commands.get(name);
@@ -45,17 +47,15 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
         await command(separator === -1 ? "" : text.slice(separator + 1), ctx);
         return;
       }
-      sent.push(`${text}@${currentSession}`);
-      busy = true;
-      await emit("agent_start", { type: "agent_start" });
-    } else if (text.startsWith("!")) {
+    }
+    if (text.startsWith("!")) {
       sent.push(`${text}@${currentSession}`);
       entries.push({ type: "message", message: { role: "bashExecution", command: text.slice(text.startsWith("!!") ? 2 : 1).trim(), exitCode: 0, cancelled: false } } as SessionEntry);
-    } else {
-      sent.push(`${text}@${currentSession}`);
-      busy = true;
-      await emit("agent_start", { type: "agent_start" });
+      return;
     }
+    sent.push(`${text}@${currentSession}`);
+    busy = true;
+    await emit("agent_start", { type: "agent_start" });
   };
   const ui = {
     theme,
