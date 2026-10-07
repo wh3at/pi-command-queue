@@ -40,3 +40,7 @@ pi -e .
 ```
 
 `pi -e .` loads this checkout without installing it. Licensed under [MIT](LICENSE).
+
+## Releases
+
+Maintainers approve publication by merging the automated Release PR. See [release setup and recovery](docs/releasing.md) for GitHub permissions, npm Trusted Publishing, and first-release verification.
