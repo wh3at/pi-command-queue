@@ -25,7 +25,7 @@ class QueueEditor extends CustomEditor {
   private readonly submitted: (text: string, editor: QueueEditor, original: string) => void;
   private inputBeforeSubmit: string | undefined;
   private readonly cancelEditing: () => boolean;
-  private nativePrefillPending = false;
+  private nativePrefill: ((text: string) => boolean) | undefined;
 
   constructor(tui: TUI, theme: ConstructorParameters<typeof CustomEditor>[1], kb: ConstructorParameters<typeof CustomEditor>[2], submitted: (text: string, editor: QueueEditor, original: string) => void, cancelEditing: () => boolean) {
     super(tui, theme, kb);
@@ -49,17 +49,16 @@ class QueueEditor extends CustomEditor {
   }
 
   setText(text: string): void {
-    if (this.nativePrefillPending) {
-      this.nativePrefillPending = false;
+    if (this.nativePrefill?.(text)) {
+      this.nativePrefill = undefined;
       return;
     }
     if (text === "" && nativeSubmission.getStore()?.()) return;
     super.setText(text);
   }
 
-  ignoreNativePrefill(): void {
-    this.nativePrefillPending = true;
-    setImmediate(() => { this.nativePrefillPending = false; });
+  ignoreNativePrefill(matches: (text: string) => boolean): void {
+    this.nativePrefill = matches;
   }
 
   async submitNative(text: string, preserveBuffer?: () => boolean): Promise<void> {
@@ -88,6 +87,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
   let terminalListenerInstalled = false;
   let editDraft: string | undefined;
   let transferredEditText: string | undefined;
+  let treePrefillText: string | undefined;
 
   function usableContext(): ExtensionContext | undefined {
     try {
@@ -345,10 +345,12 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     handler: async (_args, commandCtx) => {
       if (commandCtx.mode !== "tui") return;
       ctx = commandCtx;
-      if (queue.editing) {
+      const editingRejected = () => {
+        if (!queue.editing) return false;
         commandCtx.ui.notify("An item is already being edited. Confirm or cancel it first.", "warning");
-        return;
-      }
+        return true;
+      };
+      if (editingRejected()) return;
       if (!queue.pending.length) {
         commandCtx.ui.notify("No pending items.", "info");
         return;
@@ -362,10 +364,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       const item = items[options.indexOf(selected)];
       if (!item) return;
       if (activation !== queue.activation || selectedEditor !== editor || !editor || !usableContext()) return;
-      if (queue.editing) {
-        commandCtx.ui.notify("An item is already being edited. Confirm or cancel it first.", "warning");
-        return;
-      }
+      if (editingRejected()) return;
       const target = queue.beginEdit(item.id, activation);
       if (target) {
         editDraft = editor.getExpandedText();
@@ -400,7 +399,10 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         terminalListenerInstalled = true;
       }
       const installed = updateUI();
-      if (event.reason === "fork" && selectorSessionChanged && queue.editing) installed?.ignoreNativePrefill();
+      if (event.reason === "fork" && selectorSessionChanged && queue.editing) {
+        const editingId = queue.editing.id;
+        installed?.ignoreNativePrefill(() => queue.editing?.id === editingId);
+      }
       queue.kick();
     }
   });
@@ -418,8 +420,20 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       waitingForAgent?.("aborted");
     }
   });
+  pi.on("session_before_tree", (event, eventCtx) => {
+    const target = eventCtx.sessionManager.getEntries().find((entry) => entry.id === event.preparation.targetId);
+    const content = target?.type === "custom_message" ? target.content
+      : target?.type === "message" && target.message.role === "user" ? target.message.content : undefined;
+    treePrefillText = typeof content === "string" ? content
+      : content?.filter((part) => part.type === "text").map((part) => part.text).join("");
+  });
   pi.on("session_tree", () => {
-    if (queue.current?.text === "/tree" && queue.editing && editor && !editor.getText().trim()) editor.ignoreNativePrefill();
+    const expectedText = treePrefillText;
+    treePrefillText = undefined;
+    if (queue.current?.text === "/tree" && queue.editing && editor && !editor.getText().trim() && expectedText) {
+      const editingId = queue.editing.id;
+      editor.ignoreNativePrefill((text) => queue.editing?.id === editingId && text === expectedText);
+    }
   });
   pi.on("model_select", () => { selectorObserved = true; });
   pi.on("agent_start", () => { if (waitingForAgent) agentStarted = true; });

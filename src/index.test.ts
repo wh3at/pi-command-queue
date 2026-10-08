@@ -9,6 +9,7 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function environment(colorMode: "truecolor" | "256color" = "256color") {
   delete (globalThis as unknown as Record<string, unknown>).__pi_command_queue_runtime_v1__;
   const events = new Map<string, Listener[]>();
+  const otherExtensionEvents = new Map<string, Listener[]>();
   const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   const nativeCommands = new Map<string, () => Promise<void>>();
   const sent: string[] = [];
@@ -108,6 +109,7 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
   let pi = createPi();
   async function emit(name: string, event: object) {
     for (const listener of events.get(name) ?? []) await listener(event, ctx);
+    for (const listener of otherExtensionEvents.get(name) ?? []) await listener(event, ctx);
   }
   async function switchSession(reason: "new" | "fork") {
     await emit("session_shutdown", { type: "session_shutdown", reason });
@@ -125,6 +127,7 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
     get editor() { return editor; },
     get nativeDraft() { return nativeDraft; },
     emit,
+    on(name: string, listener: Listener) { otherExtensionEvents.set(name, [...otherExtensionEvents.get(name) ?? [], listener]); },
     async fork(selectedText: string) {
       editor.focused = true;
       await switchSession("fork");
@@ -150,6 +153,20 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
     },
     choose(choice: "continue" | "discard") { assert.ok(pausedDone); pausedDone(choice); pausedDone = undefined; },
   };
+}
+
+async function pendingEditSelection() {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  app.ctx.isIdle = () => false;
+  app.submit("B");
+  app.editor.setText("before");
+  let choose!: (confirm: boolean) => void;
+  app.ui.select = (_title, options) => new Promise((resolve) => {
+    choose = (confirm) => resolve(confirm ? options[0] : undefined);
+  });
+  const selecting = app.commands.get("command-queue-edit")!("", app.ctx);
+  return { app, choose, selecting };
 }
 
 async function editingBehindCompact() {
@@ -576,32 +593,18 @@ test("autocomplete consumes the first Esc; outside editing Esc delegates to Pi",
 });
 
 test("selector cancellation leaves the latest draft unchanged", async () => {
-  const app = environment();
-  await app.start(); await app.turnOn();
-  app.ctx.isIdle = () => false;
-  app.submit("B");
-  app.editor.setText("before");
-  let choose!: () => void;
-  app.ui.select = () => new Promise((resolve) => { choose = () => resolve(undefined); });
-  const selecting = app.commands.get("command-queue-edit")!("", app.ctx);
+  const { app, choose, selecting } = await pendingEditSelection();
   app.editor.setText("latest draft");
-  choose(); await selecting;
+  choose(false); await selecting;
   assert.equal(app.editor.getText(), "latest draft");
   assert.ok(app.widgets.at(-1)?.includes("• B"));
   await app.commands.get("command-queue")!("", app.ctx);
 });
 
 test("draft is stashed only when a valid selection actually begins editing", async () => {
-  const app = environment();
-  await app.start(); await app.turnOn();
-  app.ctx.isIdle = () => false;
-  app.submit("B");
-  app.editor.setText("before");
-  let choose!: () => void;
-  app.ui.select = (_title, options) => new Promise((resolve) => { choose = () => resolve(options[0]); });
-  const selecting = app.commands.get("command-queue-edit")!("", app.ctx);
+  const { app, choose, selecting } = await pendingEditSelection();
   app.editor.setText("latest draft");
-  choose(); await selecting;
+  choose(true); await selecting;
   assert.equal(app.editor.getText(), "B");
   app.submit("B′");
   assert.equal(app.editor.getText(), "latest draft");
@@ -775,6 +778,7 @@ for (const selectedText of ["past message", ""]) {
     test(`queued /fork preserves editing against ${selectedText ? "non-empty" : "empty"} prefill before ${cancel ? "cancellation" : "confirmation"}`, async () => {
       const app = environment();
       await app.start(); await app.turnOn();
+      app.on("session_start", tick);
       app.submit("A"); app.submit("/fork"); app.submit("B");
       await tick(); await tick();
       app.ui.select = async (_title, options) => options[1];
@@ -833,10 +837,15 @@ test("an external fork discards editing and accepts Pi's prefill", async () => {
 
 for (const editedText of ["", "   "]) {
   for (const editing of [false, true]) {
-    for (const selectedText of ["past message", ""]) {
+    for (const { selectedText, userMessage } of [
+      { selectedText: "past message", userMessage: false },
+      { selectedText: "", userMessage: false },
+      { selectedText: "past user message", userMessage: true },
+    ]) {
       test(`queued /tree ${editing ? "preserves rejected editing" : "retains native prefill"} with ${JSON.stringify(editedText)} and selected text ${JSON.stringify(selectedText)}`, async () => {
         const app = environment();
         await app.start(); await app.turnOn();
+        app.on("session_tree", tick);
         app.nativeCommands.set("/tree", async () => { app.editor.focused = false; });
         app.submit("A"); app.submit("/tree"); app.submit("B");
         await tick(); await tick();
@@ -851,12 +860,25 @@ for (const editedText of ["", "   "]) {
         const originalText = app.editor.getText();
         if (editing) assert.equal(originalText, editedText);
         app.editor.focused = true;
-        await app.emit("session_tree", { type: "session_tree", newLeafId: "selected", oldLeafId: "previous" });
+        const target: SessionEntry = userMessage ? {
+          type: "message", id: "selected", parentId: "previous", timestamp: new Date().toISOString(),
+          message: { role: "user", content: [{ type: "text", text: selectedText }], timestamp: Date.now() },
+        } : {
+          type: "custom_message", id: "selected", parentId: "previous", timestamp: new Date().toISOString(),
+          customType: "test", content: selectedText, display: true,
+        };
+        app.ctx.sessionManager.getEntries().push(target);
+        await app.emit("session_before_tree", { type: "session_before_tree", preparation: { targetId: "selected" } });
+        await app.emit("session_tree", { type: "session_tree", newLeafId: "previous", oldLeafId: "previous" });
         if (selectedText && !app.editor.getText().trim()) app.editor.setText(selectedText);
         const expectedText = editing || !selectedText ? originalText : selectedText;
         assert.equal(app.editor.getText(), expectedText);
         await new Promise<void>((resolve) => setTimeout(resolve, 60));
         if (editing) {
+          if (!selectedText) {
+            app.ui.setEditorText("external replacement");
+            assert.equal(app.editor.getText(), "external replacement");
+          }
           app.submit("B′");
           assert.equal(app.editor.getText(), "draft");
           await tick(); await tick();
