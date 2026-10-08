@@ -25,6 +25,7 @@ class QueueEditor extends CustomEditor {
   private readonly submitted: (text: string, editor: QueueEditor, original: string) => void;
   private inputBeforeSubmit: string | undefined;
   private readonly cancelEditing: () => boolean;
+  private forkPrefillPending = false;
 
   constructor(tui: TUI, theme: ConstructorParameters<typeof CustomEditor>[1], kb: ConstructorParameters<typeof CustomEditor>[2], submitted: (text: string, editor: QueueEditor, original: string) => void, cancelEditing: () => boolean) {
     super(tui, theme, kb);
@@ -48,8 +49,16 @@ class QueueEditor extends CustomEditor {
   }
 
   setText(text: string): void {
+    if (this.forkPrefillPending) {
+      this.forkPrefillPending = false;
+      return;
+    }
     if (text === "" && nativeSubmission.getStore()?.()) return;
     super.setText(text);
+  }
+
+  ignoreForkPrefill(): void {
+    this.forkPrefillPending = true;
   }
 
   async submitNative(text: string, preserveBuffer?: () => boolean): Promise<void> {
@@ -88,7 +97,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     return undefined;
   }
 
-  function updateUI(): void {
+  function updateUI(): QueueEditor | undefined {
     const current = usableContext();
     if (!current) return;
     if (!queue.editing && editDraft !== undefined) {
@@ -112,10 +121,10 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       current.ui.setEditorComponent((tui, theme, kb) => {
         const installed: QueueEditor = new QueueEditor(tui, theme, kb, onSubmit, () => editor === installed && !!usableContext() && queue.cancelEdit());
         editor = installed;
-        if (transferredEditText !== undefined) editor.setText(transferredEditText);
-        transferredEditText = undefined;
         return editor;
       });
+      if (transferredEditText !== undefined) editor?.setText(transferredEditText);
+      transferredEditText = undefined;
     }
     const label = queue.mode === "paused" ? "PAUSED" : "ON";
     const paint = orange(current.ui.theme);
@@ -125,6 +134,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     for (const item of queue.pending.slice(0, 5)) lines.push(`• ${preview(item.text)}`);
     if (queue.pending.length > 5) lines.push(`${queue.pending.length - 5} more · /command-queue-edit`);
     current.ui.setWidget(WIDGET, lines, { placement: "aboveEditor" });
+    return editor;
   }
 
   function queueControl(text: string): boolean {
@@ -388,17 +398,19 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         });
         terminalListenerInstalled = true;
       }
-      updateUI();
+      const installed = updateUI();
+      if (event.reason === "fork" && selectorSessionChanged && queue.editing) installed?.ignoreForkPrefill();
       queue.kick();
     }
   });
 
   pi.on("session_shutdown", (event) => {
     if (event.reason === "quit" || event.reason === "reload") delete registry[RUNTIME_KEY];
-    transferredEditText = queue.editing && queue.current && sessionChangingCommand(queue.current.text) && event.reason !== "quit" && event.reason !== "reload" ? editor?.getExpandedText() : undefined;
+    const transferQueue = event.reason !== "quit" && event.reason !== "reload" && !!queue.current && sessionChangingCommand(queue.current.text);
+    transferredEditText = transferQueue && queue.editing ? editor?.getExpandedText() : undefined;
     // Pi has already stopped or is replacing the UI; do not repaint the old editor.
     ctx = undefined;
-    if (event.reason === "quit" || event.reason === "reload" || !queue.current || !sessionChangingCommand(queue.current.text)) {
+    if (!transferQueue) {
       queue.discard(true);
       editDraft = undefined;
       transferredEditText = undefined;
