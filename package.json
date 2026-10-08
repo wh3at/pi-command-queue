@@ -1,6 +1,6 @@
 {
   "name": "pi-command-queue",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Queue prompts and commands for sequential execution in the Pi terminal UI",
   "license": "MIT",
   "repository": {
@@ -8,11 +8,19 @@
     "url": "git+https://github.com/wh3at/pi-command-queue.git"
   },
   "homepage": "https://github.com/wh3at/pi-command-queue#readme",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "type": "module",
-  "files": ["src/index.ts", "src/commands.ts", "src/queue.ts"],
+  "files": [
+    "src/index.ts",
+    "src/commands.ts",
+    "src/queue.ts"
+  ],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "scripts": {
     "test": "node --test src/*.test.ts",
