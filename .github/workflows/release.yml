@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to retry publishing
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: >-
+      ${{ always() && !cancelled() && github.ref == 'refs/heads/main' &&
+          (needs.release-please.outputs.release_created == 'true' ||
+           github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Resolve GitHub Release
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease > release.json
+          jq -e --arg tag "$RELEASE_TAG" '.tagName == $tag and (.isDraft | not) and (.isPrerelease | not)' release.json
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Install OIDC-compatible npm
+        run: npm install --global npm@11.19.1
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          assert.equal(pkg.name, 'pi-command-queue');
+          assert.equal(process.env.RELEASE_TAG, `v${pkg.version}`);
+          assert.equal(lock.version, pkg.version);
+          assert.equal(lock.packages[''].version, pkg.version);
+          NODE
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Check whether version is already published
+        id: registry
+        run: |
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+          status=$(curl --silent --show-error --output npm-version.json --write-out '%{http_code}' "https://registry.npmjs.org/pi-command-queue/$version")
+          case "$status" in
+            200)
+              jq -e --arg version "$version" '.name == "pi-command-queue" and .version == $version' npm-version.json
+              echo "published=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Registry lookup failed: HTTP $status" >&2
+              exit 1
+              ;;
+          esac
+      - name: Publish with OIDC
+        if: steps.registry.outputs.published == 'false'
+        run: npm publish --access public
