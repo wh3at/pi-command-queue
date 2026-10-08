@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import { inputKind, sessionChangingCommand } from "./commands.ts";
 import { CommandQueue, type QueueItem, type QueueOutcome } from "./queue.ts";
 
@@ -17,26 +18,51 @@ function orange(theme: ExtensionContext["ui"]["theme"]): (text: string) => strin
 type Submit = (text: string) => void | Promise<void>;
 const RUNTIME_KEY = "__pi_command_queue_runtime_v1__";
 type RuntimeRegistry = typeof globalThis & { [RUNTIME_KEY]?: { attach(pi: ExtensionAPI): void } };
+const nativeSubmission = new AsyncLocalStorage<(() => boolean) | undefined>();
 
-/** Pi installs its native submit callback after the editor factory returns. */
 class QueueEditor extends CustomEditor {
   private nativeSubmit: Submit | undefined;
-  private readonly submitted: (text: string, editor: QueueEditor) => void;
+  private readonly submitted: (text: string, editor: QueueEditor, original: string) => void;
+  private inputBeforeSubmit: string | undefined;
+  private readonly cancelEditing: () => boolean;
+  private nativePrefill: ((text: string) => boolean) | undefined;
 
-  constructor(tui: TUI, theme: ConstructorParameters<typeof CustomEditor>[1], kb: ConstructorParameters<typeof CustomEditor>[2], submitted: (text: string, editor: QueueEditor) => void) {
+  constructor(tui: TUI, theme: ConstructorParameters<typeof CustomEditor>[1], kb: ConstructorParameters<typeof CustomEditor>[2], submitted: (text: string, editor: QueueEditor, original: string) => void, cancelEditing: () => boolean) {
     super(tui, theme, kb);
     this.submitted = submitted;
-    // Keep Editor.submitValue() intact: it expands bracketed paste markers,
-    // maintains history state and works for both Enter and Pi's Alt+Enter action.
+    this.cancelEditing = cancelEditing;
     Object.defineProperty(this, "onSubmit", {
       configurable: true,
-      get: () => (text: string) => this.submitted(text, this),
+      get: () => (text: string) => this.submitted(text, this, this.inputBeforeSubmit ?? text),
       set: (callback: Submit) => { this.nativeSubmit = callback; },
     });
   }
 
-  submitNative(text: string): Promise<void> {
-    return Promise.resolve(this.nativeSubmit?.(text));
+  handleInput(data: string): void {
+    this.inputBeforeSubmit = this.getExpandedText();
+    try {
+      if (matchesKey(data, "escape") && !this.isShowingAutocomplete() && this.cancelEditing()) return;
+      super.handleInput(data);
+    } finally {
+      this.inputBeforeSubmit = undefined;
+    }
+  }
+
+  setText(text: string): void {
+    if (this.nativePrefill?.(text)) {
+      this.nativePrefill = undefined;
+      return;
+    }
+    if (text === "" && nativeSubmission.getStore()?.()) return;
+    super.setText(text);
+  }
+
+  ignoreNativePrefill(matches: (text: string) => boolean): void {
+    this.nativePrefill = matches;
+  }
+
+  async submitNative(text: string, preserveBuffer?: () => boolean): Promise<void> {
+    await nativeSubmission.run(preserveBuffer, () => this.nativeSubmit?.(text));
   }
 }
 
@@ -59,6 +85,9 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
   let selectorSessionChanged = false;
   let pauseDialogOpen = false;
   let terminalListenerInstalled = false;
+  let editDraft: string | undefined;
+  let transferredEditText: string | undefined;
+  let treePrefillText: string | undefined;
 
   function usableContext(): ExtensionContext | undefined {
     try {
@@ -69,9 +98,13 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     return undefined;
   }
 
-  function updateUI(): void {
+  function updateUI(): QueueEditor | undefined {
     const current = usableContext();
     if (!current) return;
+    if (!queue.editing && editDraft !== undefined) {
+      editor?.setText(editDraft);
+      editDraft = undefined;
+    }
     if (queue.mode === "off") {
       current.ui.setWidget(WIDGET, undefined);
       if (hasInstalledEditor) {
@@ -79,7 +112,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         hasInstalledEditor = false;
         current.ui.setEditorComponent(previousEditor);
         editor = undefined;
-        if (draft) current.ui.setEditorText(draft);
+        if (draft !== undefined) current.ui.setEditorText(draft);
       }
       return;
     }
@@ -87,29 +120,49 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       previousEditor = current.ui.getEditorComponent();
       hasInstalledEditor = true;
       current.ui.setEditorComponent((tui, theme, kb) => {
-        editor = new QueueEditor(tui, theme, kb, onSubmit);
+        const installed: QueueEditor = new QueueEditor(tui, theme, kb, onSubmit, () => editor === installed && !!usableContext() && queue.cancelEdit());
+        editor = installed;
         return editor;
       });
+      if (transferredEditText !== undefined) editor?.setText(transferredEditText);
+      transferredEditText = undefined;
     }
     const label = queue.mode === "paused" ? "PAUSED" : "ON";
     const paint = orange(current.ui.theme);
     const lines = [paint(`Command queue ${label}`)];
     if (queue.current) lines.push(paint(`Running: ${preview(queue.current.text)}`));
+    if (queue.editing) lines.push(paint(`Editing: ${queue.editing.id} · Enterで確定 / Escで編集取消`));
     for (const item of queue.pending.slice(0, 5)) lines.push(`• ${preview(item.text)}`);
     if (queue.pending.length > 5) lines.push(`${queue.pending.length - 5} more · /command-queue-edit`);
     current.ui.setWidget(WIDGET, lines, { placement: "aboveEditor" });
+    return editor;
+  }
+
+  function queueControl(text: string): boolean {
+    const [command] = text.split(/\s/, 1);
+    return command === "/command-queue" || command === "/command-queue-edit";
   }
 
   function queueRejection(text: string): string | undefined {
     if (queue.mode === "paused") return "Queue paused. Choose Continue or Discard.";
-    if (inputKind(text, pi.getCommands()) === "unsupported") return "Commands from other extensions cannot be queued. Turn the queue off to run this command.";
+    if (!(queue.editing && queueControl(text)) && inputKind(text, pi.getCommands()) === "unsupported") return "Commands from other extensions cannot be queued. Turn the queue off to run this command.";
   }
 
-  function onSubmit(text: string, source: QueueEditor): void {
-    if (!text.trim()) return;
+  function onSubmit(text: string, source: QueueEditor, original: string): void {
     const current = usableContext();
-    if (!current) return;
-    if (text === "/command-queue" || text.startsWith("/command-queue ") || text === "/command-queue-edit") {
+    if (!current || source !== editor) return;
+    if (queue.editing) {
+      const rejection = text.trim() ? queueRejection(text) : "Edited input cannot be empty.";
+      if (rejection) {
+        source.setText(original);
+        current.ui.notify(rejection, "warning");
+      } else {
+        queue.confirmEdit(text);
+      }
+      return;
+    }
+    if (!text.trim()) return;
+    if (queueControl(text)) {
       void source.submitNative(text);
       return;
     }
@@ -138,11 +191,10 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     selectorWasCancelled = false;
     selectorObserved = false;
     selectorSessionChanged = false;
-    const draft = activeEditor.getExpandedText();
+    const activation = queue.activation;
     try {
       if (item.text === "/reload" || item.text === "/quit") queue.discard(true);
-      await activeEditor.submitNative(item.text);
-      // Some builtin commands open a selector and return before selection.
+      await activeEditor.submitNative(item.text, () => !!usableContext() && activation === queue.activation && queue.current?.id === item.id && queue.mode !== "off");
       if (queue.mode === "on" && !editor?.focused) {
         const outcome = await waitForSelector();
         if (outcome !== "completed") return outcome;
@@ -151,9 +203,6 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     } catch (error) {
       usableContext()?.ui.notify(`Could not send command: ${String(error)}`, "error");
       return "failed";
-    } finally {
-      // Native commands clear the editor; don't erase a draft typed while they ran.
-      if (draft && editor?.getExpandedText() === "" && queue.mode !== "off") editor.setText(draft);
     }
   }
 
@@ -213,7 +262,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
     // agent_settled fires before the previous prompt returns to Pi's main loop.
     await afterTurn();
     if (queue.mode !== "on" || queue.current?.id !== item.id) return "aborted";
-    const kind = inputKind(item.text, pi.getCommands());
+    const kind = queueControl(item.text) ? "builtin" : inputKind(item.text, pi.getCommands());
     if (kind === "builtin") return dispatchBuiltin(item);
     if (kind === "bash") return dispatchBash(item);
     if (kind === "unsupported") return "failed";
@@ -292,22 +341,36 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
   });
 
   pi.registerCommand("command-queue-edit", {
-    description: "Select and remove a pending queue item",
+    description: "Edit a pending queue item in place and restore your draft",
     handler: async (_args, commandCtx) => {
       if (commandCtx.mode !== "tui") return;
       ctx = commandCtx;
+      const editingRejected = () => {
+        if (!queue.editing) return false;
+        commandCtx.ui.notify("An item is already being edited. Confirm or cancel it first.", "warning");
+        return true;
+      };
+      if (editingRejected()) return;
       if (!queue.pending.length) {
         commandCtx.ui.notify("No pending items.", "info");
         return;
       }
       const items = [...queue.pending];
+      const activation = queue.activation;
+      const selectedEditor = editor;
       const options = items.map((item) => `${item.id}. ${preview(item.text)}`);
-      const selected = await commandCtx.ui.select("Select a pending item to remove", options);
+      const selected = await commandCtx.ui.select("Select a pending item to edit", options);
       if (!selected) return;
       const item = items[options.indexOf(selected)];
       if (!item) return;
-      if (queue.remove(item.id)) commandCtx.ui.notify(`Removed item ${item.id}.`, "info");
-      else if (queue.current?.id === item.id) commandCtx.ui.notify(`Item ${item.id} is already running; cannot remove it.`, "warning");
+      if (activation !== queue.activation || selectedEditor !== editor || !editor || !usableContext()) return;
+      if (editingRejected()) return;
+      const target = queue.beginEdit(item.id, activation);
+      if (target) {
+        editDraft = editor.getExpandedText();
+        editor.setText(target.text);
+        commandCtx.ui.notify(`Editing item ${item.id}. Enter to confirm; Esc to cancel editing.`, "info");
+      } else if (queue.current?.id === item.id) commandCtx.ui.notify(`Item ${item.id} is already running; cannot edit it.`, "warning");
       else commandCtx.ui.notify(`Item ${item.id} is no longer pending.`, "info");
     },
   });
@@ -335,18 +398,41 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         });
         terminalListenerInstalled = true;
       }
-      updateUI();
+      const installed = updateUI();
+      if (event.reason === "fork" && selectorSessionChanged && queue.editing) {
+        const editingId = queue.editing.id;
+        installed?.ignoreNativePrefill(() => queue.editing?.id === editingId);
+      }
       queue.kick();
     }
   });
 
   pi.on("session_shutdown", (event) => {
     if (event.reason === "quit" || event.reason === "reload") delete registry[RUNTIME_KEY];
+    const transferQueue = event.reason !== "quit" && event.reason !== "reload" && !!queue.current && sessionChangingCommand(queue.current.text);
+    transferredEditText = transferQueue && queue.editing ? editor?.getExpandedText() : undefined;
     // Pi has already stopped or is replacing the UI; do not repaint the old editor.
     ctx = undefined;
-    if (event.reason === "quit" || event.reason === "reload" || !queue.current || !sessionChangingCommand(queue.current.text)) {
+    if (!transferQueue) {
       queue.discard(true);
+      editDraft = undefined;
+      transferredEditText = undefined;
       waitingForAgent?.("aborted");
+    }
+  });
+  pi.on("session_before_tree", (event, eventCtx) => {
+    const target = eventCtx.sessionManager.getEntries().find((entry) => entry.id === event.preparation.targetId);
+    const content = target?.type === "custom_message" ? target.content
+      : target?.type === "message" && target.message.role === "user" ? target.message.content : undefined;
+    treePrefillText = typeof content === "string" ? content
+      : content?.filter((part) => part.type === "text").map((part) => part.text).join("");
+  });
+  pi.on("session_tree", () => {
+    const expectedText = treePrefillText;
+    treePrefillText = undefined;
+    if (queue.current?.text === "/tree" && queue.editing && editor && !editor.getText().trim() && expectedText) {
+      const editingId = queue.editing.id;
+      editor.ignoreNativePrefill((text) => queue.editing?.id === editingId && text === expectedText);
     }
   });
   pi.on("model_select", () => { selectorObserved = true; });

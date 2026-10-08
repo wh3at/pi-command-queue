@@ -13,7 +13,6 @@ export interface QueueDriver {
   paused(): void;
 }
 
-/** The pending list never contains the item currently being dispatched. */
 export class CommandQueue {
   mode: QueueMode = "off";
   readonly pending: QueueItem[] = [];
@@ -21,6 +20,15 @@ export class CommandQueue {
   private nextId = 1;
   private generation = 0;
   private readonly driver: QueueDriver;
+  private edit: { item: QueueItem; index: number } | undefined;
+
+  get editing(): QueueItem | undefined {
+    return this.edit?.item;
+  }
+
+  get activation(): number {
+    return this.generation;
+  }
 
   constructor(driver: QueueDriver) {
     this.driver = driver;
@@ -38,6 +46,7 @@ export class CommandQueue {
   discard(detachCurrent = false): void {
     this.mode = "off";
     this.pending.length = 0;
+    this.edit = undefined;
     this.generation++;
     if (detachCurrent) this.current = undefined;
     this.driver.changed();
@@ -55,7 +64,37 @@ export class CommandQueue {
     const index = this.pending.findIndex((item) => item.id === id);
     if (index < 0) return false;
     this.pending.splice(index, 1);
+    if (this.edit && index < this.edit.index) this.edit.index--;
     this.driver.changed();
+    return true;
+  }
+
+  beginEdit(id: number, activation = this.generation): QueueItem | undefined {
+    if (this.mode === "off" || this.edit || activation !== this.generation) return undefined;
+    const index = this.pending.findIndex((item) => item.id === id);
+    if (index < 0) return undefined;
+    const [item] = this.pending.splice(index, 1);
+    this.edit = { item: item!, index };
+    this.driver.changed();
+    return item;
+  }
+
+  confirmEdit(text: string): boolean {
+    if (this.mode !== "on" || !text.trim()) return false;
+    return this.finishEdit(text);
+  }
+
+  cancelEdit(): boolean {
+    return this.finishEdit(this.edit?.item.text);
+  }
+
+  private finishEdit(text: string | undefined): boolean {
+    if (!this.edit || text === undefined) return false;
+    const { item, index } = this.edit;
+    this.pending.splice(index, 0, { id: item.id, text });
+    this.edit = undefined;
+    this.driver.changed();
+    this.kick();
     return true;
   }
 
@@ -67,12 +106,12 @@ export class CommandQueue {
   }
 
   kick(): void {
-    if (this.mode !== "on" || this.current || !this.pending.length || !this.driver.ready()) return;
+    if (this.mode !== "on" || this.current || !this.pending.length || this.edit?.index === 0 || !this.driver.ready()) return;
     const item = this.pending.shift()!;
+    if (this.edit) this.edit.index--;
     const generation = this.generation;
     this.current = item;
     this.driver.changed();
-    // Always put the item into the FIFO before dispatching, even when Pi is already idle.
     void Promise.resolve()
       .then(() => this.driver.dispatch(item))
       .catch((): QueueOutcome => "failed")
@@ -86,14 +125,14 @@ export class CommandQueue {
         }
         if (this.mode === "on") {
           if (outcome !== "completed") {
-            if (this.pending.length) {
+            if (this.pending.length || this.edit) {
               this.mode = "paused";
               this.driver.changed();
               this.driver.paused();
               return;
             }
             this.mode = "off";
-          } else if (!this.pending.length) {
+          } else if (!this.pending.length && !this.edit) {
             this.mode = "off";
           }
         }
