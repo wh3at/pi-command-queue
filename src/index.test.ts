@@ -152,6 +152,17 @@ function environment(colorMode: "truecolor" | "256color" = "256color") {
   };
 }
 
+async function editingBehindCompact() {
+  const app = environment();
+  await app.start(); await app.turnOn();
+  const finish = app.holdCompact();
+  app.submit("A"); app.submit("/compact"); app.submit("B");
+  await tick(); await tick();
+  app.ui.select = async (_title, options) => options[1];
+  await app.commands.get("command-queue-edit")!("", app.ctx);
+  return { app, finish };
+}
+
 test("Enter queues text; next item waits for settled, /new changes the destination", async () => {
   const app = environment();
   await app.start(); await app.turnOn();
@@ -659,13 +670,7 @@ test("a replaced editor cannot cancel editing in the new session", async () => {
 });
 
 test("native commands cannot resurrect an edit after restoring an empty draft", async () => {
-  const app = environment();
-  await app.start(); await app.turnOn();
-  const finish = app.holdCompact();
-  app.submit("A"); app.submit("/compact"); app.submit("B");
-  await tick(); await tick();
-  app.ui.select = async (_title, options) => options[1];
-  await app.commands.get("command-queue-edit")!("", app.ctx);
+  const { app, finish } = await editingBehindCompact();
   app.editor.setText("edited B");
   await app.settle();
   assert.equal(app.editor.getText(), "edited B");
@@ -679,13 +684,7 @@ test("native commands cannot resurrect an edit after restoring an empty draft", 
 });
 
 test("empty rejected input stays empty when a preceding native command completes", async () => {
-  const app = environment();
-  await app.start(); await app.turnOn();
-  const finish = app.holdCompact();
-  app.submit("A"); app.submit("/compact"); app.submit("B");
-  await tick(); await tick();
-  app.ui.select = async (_title, options) => options[1];
-  await app.commands.get("command-queue-edit")!("", app.ctx);
+  const { app, finish } = await editingBehindCompact();
   await app.settle();
   app.submit("");
   finish();
@@ -738,13 +737,7 @@ test("a late native clear preserves editing begun while the command was already 
 });
 
 test("external editor empty replacements remain empty after native command completion", async () => {
-  const app = environment();
-  await app.start(); await app.turnOn();
-  const finish = app.holdCompact();
-  app.submit("A"); app.submit("/compact"); app.submit("B");
-  await tick(); await tick();
-  app.ui.select = async (_title, options) => options[1];
-  await app.commands.get("command-queue-edit")!("", app.ctx);
+  const { app, finish } = await editingBehindCompact();
   await app.settle();
   app.ui.setEditorText("");
   finish();
@@ -837,3 +830,41 @@ test("an external fork discards editing and accepts Pi's prefill", async () => {
   await app.commands.get("command-queue")!("", app.ctx);
   assert.deepEqual(app.sent, ["A@1"]);
 });
+
+for (const editedText of ["", "   "]) {
+  for (const editing of [false, true]) {
+    for (const selectedText of ["past message", ""]) {
+      test(`queued /tree ${editing ? "preserves rejected editing" : "retains native prefill"} with ${JSON.stringify(editedText)} and selected text ${JSON.stringify(selectedText)}`, async () => {
+        const app = environment();
+        await app.start(); await app.turnOn();
+        app.nativeCommands.set("/tree", async () => { app.editor.focused = false; });
+        app.submit("A"); app.submit("/tree"); app.submit("B");
+        await tick(); await tick();
+        app.editor.setText("draft");
+        if (editing) {
+          app.ui.select = async (_title, options) => options[1];
+          await app.commands.get("command-queue-edit")!("", app.ctx);
+        }
+        app.submit(editedText);
+        await app.settle();
+        assert.equal(app.editor.focused, false);
+        const originalText = app.editor.getText();
+        if (editing) assert.equal(originalText, editedText);
+        app.editor.focused = true;
+        await app.emit("session_tree", { type: "session_tree", newLeafId: "selected", oldLeafId: "previous" });
+        if (selectedText && !app.editor.getText().trim()) app.editor.setText(selectedText);
+        const expectedText = editing || !selectedText ? originalText : selectedText;
+        assert.equal(app.editor.getText(), expectedText);
+        await new Promise<void>((resolve) => setTimeout(resolve, 60));
+        if (editing) {
+          app.submit("B′");
+          assert.equal(app.editor.getText(), "draft");
+          await tick(); await tick();
+        }
+        assert.deepEqual(app.sent, ["A@1", "/tree@1", `${editing ? "B′" : "B"}@1`]);
+        await app.settle();
+        assert.equal(app.nativeDraft, editing ? "draft" : expectedText);
+      });
+    }
+  }
+}

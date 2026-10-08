@@ -25,7 +25,7 @@ class QueueEditor extends CustomEditor {
   private readonly submitted: (text: string, editor: QueueEditor, original: string) => void;
   private inputBeforeSubmit: string | undefined;
   private readonly cancelEditing: () => boolean;
-  private forkPrefillPending = false;
+  private nativePrefillPending = false;
 
   constructor(tui: TUI, theme: ConstructorParameters<typeof CustomEditor>[1], kb: ConstructorParameters<typeof CustomEditor>[2], submitted: (text: string, editor: QueueEditor, original: string) => void, cancelEditing: () => boolean) {
     super(tui, theme, kb);
@@ -49,16 +49,17 @@ class QueueEditor extends CustomEditor {
   }
 
   setText(text: string): void {
-    if (this.forkPrefillPending) {
-      this.forkPrefillPending = false;
+    if (this.nativePrefillPending) {
+      this.nativePrefillPending = false;
       return;
     }
     if (text === "" && nativeSubmission.getStore()?.()) return;
     super.setText(text);
   }
 
-  ignoreForkPrefill(): void {
-    this.forkPrefillPending = true;
+  ignoreNativePrefill(): void {
+    this.nativePrefillPending = true;
+    setImmediate(() => { this.nativePrefillPending = false; });
   }
 
   async submitNative(text: string, preserveBuffer?: () => boolean): Promise<void> {
@@ -399,7 +400,7 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
         terminalListenerInstalled = true;
       }
       const installed = updateUI();
-      if (event.reason === "fork" && selectorSessionChanged && queue.editing) installed?.ignoreForkPrefill();
+      if (event.reason === "fork" && selectorSessionChanged && queue.editing) installed?.ignoreNativePrefill();
       queue.kick();
     }
   });
@@ -416,6 +417,9 @@ export default function commandQueueExtension(initialPi: ExtensionAPI): void {
       transferredEditText = undefined;
       waitingForAgent?.("aborted");
     }
+  });
+  pi.on("session_tree", () => {
+    if (queue.current?.text === "/tree" && queue.editing && editor && !editor.getText().trim()) editor.ignoreNativePrefill();
   });
   pi.on("model_select", () => { selectorObserved = true; });
   pi.on("agent_start", () => { if (waitingForAgent) agentStarted = true; });
